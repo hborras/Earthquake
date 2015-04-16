@@ -1,7 +1,13 @@
 package com.plagueis.labs.earthquake;
 
 import android.app.ListFragment;
+import android.app.LoaderManager;
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.CursorLoader;
 import android.content.Intent;
+import android.content.Loader;
+import android.database.Cursor;
 import android.location.Location;
 import android.net.Uri;
 import android.os.Bundle;
@@ -10,6 +16,7 @@ import android.util.Log;
 import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.ListView;
+import android.widget.SimpleCursorAdapter;
 
 
 import org.w3c.dom.Document;
@@ -35,21 +42,25 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 
 
-public class EarthquakeListFragment extends ListFragment {
+public class EarthquakeListFragment extends ListFragment implements LoaderManager.LoaderCallbacks<Cursor>{
 
     private static final String TAG = "EARTHQUAKE";
     private Handler handler = new Handler();
 
-    ArrayAdapter<Quake> aa;
-    ArrayList<Quake> earthquakes = new ArrayList<>();
+    SimpleCursorAdapter adapter;
 
     @Override
     public void onActivityCreated(Bundle savedInstanceState) {
         super.onActivityCreated(savedInstanceState);
 
-        int layoutId = android.R.layout.simple_list_item_1;
-        aa = new ArrayAdapter<>(getActivity(), layoutId, earthquakes);
-        setListAdapter(aa);
+        // Create a new Adapter and bind it to the List View
+        adapter = new SimpleCursorAdapter(getActivity(),
+                android.R.layout.simple_list_item_1, null,
+                new String[] { EarthquakeProvider.KEY_SUMMARY},
+                new int[] { android.R.id.text1 }, 0);
+        setListAdapter(adapter);
+
+        getLoaderManager().initLoader(0, null, this);
 
         Thread t = new Thread(new Runnable() {
             @Override
@@ -62,6 +73,13 @@ public class EarthquakeListFragment extends ListFragment {
     }
 
     public void refreshEarthquakes(){
+        handler.post(new Runnable() {
+            @Override
+            public void run() {
+                getLoaderManager().restartLoader(0, null, EarthquakeListFragment.this);
+            }
+        });
+
         // Get the XML
         URL url;
         try {
@@ -83,9 +101,6 @@ public class EarthquakeListFragment extends ListFragment {
                 // Parse the earthquake feed.
                 Document dom = db.parse(in);
                 Element docEle = dom.getDocumentElement();
-
-                // Clear the old earthquakes
-                earthquakes.clear();
 
                 // Get a list of earth earthquake entry;
                 NodeList nl = docEle.getElementsByTagName("entry");
@@ -145,25 +160,60 @@ public class EarthquakeListFragment extends ListFragment {
         }
     }
 
-    @Override
-    public void onListItemClick(ListView l, View v, int position, long id) {
-        super.onListItemClick(l, v, position, id);
+    private void addNewQuake(Quake _quake){
 
-        Quake quake = earthquakes.get(position);
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.setData(Uri.parse(quake.getLink()));
+        ContentResolver cr = getActivity().getContentResolver();
 
-        startActivity(intent);
+        // Construct a  where clause to make sure we don't already have this
+        // earthquake in the provider
+        String w = EarthquakeProvider.KEY_DATE + " = " + _quake.getDate().getTime();
+
+        // If the earthquake is new, insert it into the provider
+        Cursor query = cr.query(EarthquakeProvider.CONTENT_URI, null, w, null, null);
+
+        if(query.getCount() == 0){
+            ContentValues values = new ContentValues();
+
+            values.put(EarthquakeProvider.KEY_DATE, _quake.getDate().getTime());
+            values.put(EarthquakeProvider.KEY_DETAILS, _quake.getDetails());
+            values.put(EarthquakeProvider.KEY_SUMMARY, _quake.toString());
+
+            double lat = _quake.getLocation().getLatitude();
+            double lon = _quake.getLocation().getLongitude();
+            values.put(EarthquakeProvider.KEY_LOCATION_LAT, lat);
+            values.put(EarthquakeProvider.KEY_LOCATION_LONG, lon);
+            values.put(EarthquakeProvider.KEY_LINK, _quake.getLink());
+            values.put(EarthquakeProvider.KEY_MAGNITUDE, _quake.getMagnitude());
+
+            cr.insert(EarthquakeProvider.CONTENT_URI, values);
+        }
+        query.close();
     }
 
-    private void addNewQuake(Quake _quake){
-        EarthquakeActivity earthquakeActivity = (EarthquakeActivity)getActivity();
-        if( _quake.getMagnitude() > earthquakeActivity.minimumMagnitude){
-            // Add the new quake to our list of earthquakes
-            earthquakes.add(_quake);
-        }
+    @Override
+    public Loader<Cursor> onCreateLoader(int id, Bundle args) {
+        String[] projection = new String[] {
+                EarthquakeProvider.KEY_ID,
+                EarthquakeProvider.KEY_SUMMARY
+        };
 
-        // Notify the array adapter of a change
-        aa.notifyDataSetChanged();
+        EarthquakeActivity earthquakeActivity = (EarthquakeActivity) getActivity();
+        String where = EarthquakeProvider.KEY_MAGNITUDE + " > " +
+                       earthquakeActivity.minimumMagnitude;
+
+        CursorLoader loader = new CursorLoader(getActivity(),
+                EarthquakeProvider.CONTENT_URI, projection, where, null, null);
+
+        return loader;
+    }
+
+    @Override
+    public void onLoadFinished(Loader<Cursor> loader, Cursor cursor) {
+        adapter.swapCursor(cursor);
+    }
+
+    @Override
+    public void onLoaderReset(Loader<Cursor> loader) {
+        adapter.swapCursor(null);
     }
 }
